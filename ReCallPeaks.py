@@ -64,8 +64,8 @@ class ReCallPeaks:
     '''
     ## 处理空白组（除数），因为是除法运算，空白组<1 ，赋值为 1，不小于 1,返回实际值
     @staticmethod
-    def Blank_compute (Dataframe):
-        Series = (Dataframe['TB0135r1']+Dataframe['TB0135r2'])/2
+    def Blank_compute (Dataframe,control_name: list):
+        Series = (Dataframe[control_name[0]]+Dataframe[control_name[1]])/2
         if (Series < 1):
             return 1
         else:
@@ -74,18 +74,18 @@ class ReCallPeaks:
     ## 计算处理后的 bedgraph 总矩阵的处理组, 获取每个片段 coverage 对于对照组倍数
     ## 接受样本字典 {gene:[rep_1,rep_2]},与 Coverage 总矩阵 dataframe
     @staticmethod
-    def Sample_compute (Samples: dict,DataFrame):
+    def Sample_compute (Samples: dict,DataFrame,control):
         for i in Samples:
             a = len(Samples[i])
             Sample_threshold = i + '_threshold'     ## 此列代表 处理组与对照组的倍数
             Sample_Mean = i + '_Mean'               ## 此列代表平均数
             if a == 1:
                 DataFrame.loc[:,Sample_Mean] = DataFrame[Samples[i][0]]
-                DataFrame.loc[:,Sample_threshold] = (DataFrame[Samples[i][0]]/DataFrame['TB0135'])
+                DataFrame.loc[:,Sample_threshold] = (DataFrame[Samples[i][0]]/DataFrame[control])
                 #DataFrame.loc[:,i] = (DataFrame[Sample_Mean]/DataFrame[Sample_threshold])     ## 此列代表,样品的差异倍数与Coverage的绝对值,用于抑制假阳性
             else:
                 DataFrame.loc[:,Sample_Mean] = (DataFrame[Samples[i][0]] + DataFrame[Samples[i][1]]) / 2
-                DataFrame.loc[:,Sample_threshold] = (DataFrame[Sample_Mean]/DataFrame['TB0135'])
+                DataFrame.loc[:,Sample_threshold] = (DataFrame[Sample_Mean]/DataFrame[control])
                 #DataFrame.loc[:,i] = (DataFrame[Sample_Mean]/DataFrame[Sample_threshold])
 
     '''
@@ -112,7 +112,7 @@ class ReCallPeaks:
     @staticmethod
     ## 寻找最高峰，限定Coverage均值，写出文件 '_Peak'
     ## 接受6个参数 总结果矩阵,基因列表,峰高阈值,峰间距,threshold倍数阈值,滑窗长度
-    def FindPeaks (Dataframe,sample,Peak_height: list,Peak_space: int,Mean_threshold: int,Windows_size) -> None:
+    def FindPeaks (Dataframe,sample,Peak_height: list,Peak_space: int,Mean_threshold: int,Windows_size,control) -> None:
         FindPeaks = []
         Sample_Mean = sample + '_Mean'
         Sample_threshold = sample + '_threshold'
@@ -133,7 +133,7 @@ class ReCallPeaks:
         ## 按照 Coverage 限定阈值
         result = FindPeaksResult.loc[FindPeaksResult[Sample_threshold] > Mean_threshold]
         ## 提取 threshold 对应列
-        FindPeaksOut = result[['Chr','start','end',Sample_threshold,Sample_Mean,'TB0135']]
+        FindPeaksOut = result[['Chr','start','end',Sample_threshold,Sample_Mean,control]]
         ## 排序
         FindPeaksResultOut = FindPeaksOut.sort_values(by=[Sample_Mean],ascending=False).reset_index(drop=True)
         ## 获取峰高前1000个
@@ -147,8 +147,8 @@ class ReCallPeaks:
         BedOut = FindPeaksOut[['Chr','start','end']]
         ## 由于寻峰函数本身的限制,寻找到的不一定在峰顶,这里取前后 windows 的区域,重新写表输出
         BedOut.loc[:,'bedstart'] = BedOut.apply(ReCallPeaks.Addstart,args=(Windows_size,),axis=1)
-        ## 强制限制区域为五倍滑窗长度,方便后面计算
-        BedOut.loc[:,'bedend'] = BedOut['bedstart'] + Windows_size
+        ## 强制限制区域为滑窗长度,方便后面计算
+        BedOut.loc[:,'bedend'] = BedOut['bedstart'] + 2*Windows_size
         BedOut_result = BedOut[['Chr','bedstart','bedend']]
         BedOut_result.to_csv(bedfile,sep='\t',index=False,header=None)
         print (f'PID {a} is done! outfile is {outfile} {Top_out_1000_file} {bedfile} \n')
@@ -174,12 +174,15 @@ class ReCallPeaks:
     ## 对于不同的表格列表,返回对应的基因列表与样本重复列表
     ## 接受dataframe 列名列表
     @staticmethod
-    def Fliter_gene_base_sample (data_columns: list)-> dict:
+    def Fliter_gene_base_sample (data_columns: list,control)-> dict:
         gene = []
         for column in data_columns:
-            if column.startswith("LITCHI"):
-                pattern = r'(^.*?)r\d'
-                a = re.findall(pattern,column)[0]
+            if column.startswith(control) or column.startswith('Chr') or column.startswith('start') or column.startswith('end') :
+                continue
+            else:
+                # pattern = r'(^.*?)r\d'
+                # a = re.findall(pattern,column)[0]
+                a = column.strip().split('r')[0]
                 gene.append(a)
         set_gene = set(gene)
         gene = list(set_gene)
@@ -218,20 +221,23 @@ class ReCallPeaks:
     def Read_depth_file(Sample_depth_file):
         depth = pd.read_csv(Sample_depth_file,sep='\t')
         columns = depth.columns
-        pattern = r'(^.*r\d?).sorted.bam'
+        # pattern = r'(^.*r\d?).sorted.bam'
         rename_columns = []
+        Samples = []
         for name in columns:
             if name.startswith('#'):
                 rename_columns.append('Chr')
             elif (name == 'POS'):
                 rename_columns.append('POS')
             else:
-                a = re.findall(pattern,name)[0]
+                a = name.strip().split('.sorted.bam')[0]
                 rename_columns.append(a)
+                Samples.append(a)
         depth.columns = rename_columns
-        gene_pattern = r'(^.*?).depth'
-        gene = re.findall(gene_pattern ,Sample_depth_file)[0]
-        Samples = [name for name in depth.columns if name.startswith('LITCHI')]
+        # gene_pattern = r'(^.*?).depth'
+        # gene = re.findall(gene_pattern ,Sample_depth_file)[0]
+        gene = Sample_depth_file.strip().split('.depth')[0]
+        # Samples = [name for name in depth.columns if name.startswith('LITCHI')]
         if len(Samples) == 1:
             depth.loc[:,gene] = depth[Samples[0]]
         else:
@@ -247,8 +253,8 @@ class ReCallPeaks:
         outfile = gene + '_Peaks.region.bed'
         print (f'Outfile is {outfile}')
         ## 按照制定的Windows_size,读取测序深度信息文件
-        for i in range(0,len(Peaks_depth),Windows_size):
-            select_df = Peaks_depth.iloc[i:i+Windows_size,:]
+        for i in range(0,len(Peaks_depth),2*Windows_size):
+            select_df = Peaks_depth.iloc[i:i+2*Windows_size,:]
             Compu_np = select_df[gene].to_numpy()
             ## 寻峰,为了简化,直接寻找最高峰
             Peaks_index,_ = scipy.signal.find_peaks(Compu_np,height=np.max(Compu_np))
@@ -268,6 +274,8 @@ class ReCallPeaks:
         ## 前后延长 50 bp , 即为最终 peaks 区域
         Position_df.loc[:,'start'] = Position_df['POS'] - 50
         Position_df.loc[:,'end'] = Position_df['POS'] + 50
+        Position_df.loc[:,'start'] = Position_df['start'].astype('int')
+        Position_df.loc[:,'end'] = Position_df['end'].astype('int')
         Result = Position_df[['Chr','start','end']]
         Result.to_csv(outfile,sep='\t',index=False,header=None)
     '''
@@ -283,12 +291,14 @@ def Call_Peaks():
     parser.add_option("--outRessultcsv",default="ReCallPeaks_Results.csv",help="Output file name")
     parser.add_option("--peaks_height_min",default="20",help="Peaks height min")
     parser.add_option("--peaks_height_max",default="1000",help="Peaks height max")
-    parser.add_option("--peaks_spacing",default="100",help="Peaks spacing [int] ")
+    parser.add_option("--peaks_spacing",default="1",help="Peaks spacing [int] ")
     parser.add_option("--threshold",default="2",help="The multiples difference between the control group and the experimental group")
     parser.add_option("--C_peaks_length",default="1000",help="Candidate peaks length")
     options, args = parser.parse_args()
     threads = int(options.threads)
     control = options.control_prefix
+    control_name = [control+'r1',control+'r2']
+    print (f'control_group = {control_name}')
     control_file = options.control_prefix + 'r1' +'.bedgraphfliter.csv'
     outRessultcsv = options.outRessultcsv
     height_min = float(options.peaks_height_min)
@@ -320,17 +330,18 @@ def Call_Peaks():
         data.loc[:,column_name] = ReCallPeaks.Read_Fliter_File(file).astype('int')
     print ('step 3 done!')
 
-    gene,samples = ReCallPeaks.Fliter_gene_base_sample(data.columns)
+    gene,samples = ReCallPeaks.Fliter_gene_base_sample(data.columns,control)
+    print(gene,samples)
     print ('step 4 done!')
 
     Site = data.iloc[:,:3]
     Sitedata = data.iloc[:,3:]
     print ('step 5 done!')
 
-    Sitedata.loc[:,control] = Sitedata.apply(ReCallPeaks.Blank_compute,axis=1)
+    Sitedata.loc[:,control] = Sitedata.apply(ReCallPeaks.Blank_compute,args=(control_name,),axis=1)
     print ('step 6 done!')
 
-    ReCallPeaks.Sample_compute(samples,Sitedata)
+    ReCallPeaks.Sample_compute(samples,Sitedata,control)
     print ('step 7 done!')
 
     Result = pd.concat([Site,Sitedata],axis=1)
@@ -343,7 +354,7 @@ def Call_Peaks():
         p = mp.Pool(threads)
         for sample in samples:
             a = ReCallPeaks()
-            p.apply_async(a.FindPeaks,(Result,sample,Peaks_height,spacing,threshold,Windows_size),callback=a.call_back,error_callback=a.err_call_back)
+            p.apply_async(a.FindPeaks,(Result,sample,Peaks_height,spacing,threshold,Windows_size,control),callback=a.call_back,error_callback=a.err_call_back)
         p.close()
         p.join()
     
